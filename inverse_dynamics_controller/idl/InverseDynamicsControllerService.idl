@@ -6,6 +6,22 @@ module OpenHRP
 
   interface InverseDynamicsControllerService
   {
+    // Direct MIT torque profile. Modes: -1=disabled, 0=position,
+    // 1=to torque, 2=torque, 3=to position, 4=fault.
+    typedef sequence<double> DirectTorqueSequence;
+    boolean beginDirectControlTransition(in boolean torque, in double duration);
+    boolean markDirectGainsStarted();
+    boolean setDirectTorqueCommand(in DirectTorqueSequence tau, in double ttl);
+    long getDirectControlMode();
+    // Mask used by the configured backend to report motor enable (2 or 4).
+    long getDirectServoStateMask();
+    string getDirectControlFaultReason();
+    boolean directTorqueIsZero();
+    boolean directPositionReferenceAligned();
+    void abortDirectControl();
+    // Accepted only when fresh RobotHardware feedback reports every servo OFF.
+    boolean resetDirectControlAfterServoOff();
+
     struct InverseDynamicsControllerParam
     {
       // InverseDynamicsController

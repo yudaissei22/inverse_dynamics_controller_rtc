@@ -10,6 +10,12 @@ find_package(catkin REQUIRED COMPONENTS
   )
 
 # catkin_python_setup()
+# rtmbuild2 enumerates ROS services from IDL during CMake configuration.
+# Reconfigure on IDL changes so added methods get message-generation targets
+# before the updated ROS bridge is compiled by an incremental build.
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+  "${CMAKE_CURRENT_SOURCE_DIR}/idl/InverseDynamicsControllerService.idl")
+
 # initialize rtmbuild (generate_messages is called)
 rtmbuild2_init(rtmbuild2)
 
@@ -31,3 +37,11 @@ rtmbuild2_genbridge()
 ###########
 
 add_subdirectory(rtc)
+
+if(CATKIN_ENABLE_TESTING)
+  find_package(Threads REQUIRED)
+  add_executable(test_direct_torque_gate test/test_direct_torque_gate.cpp)
+  target_include_directories(test_direct_torque_gate PRIVATE rtc/InverseDynamicsController)
+  target_link_libraries(test_direct_torque_gate ${CMAKE_THREAD_LIBS_INIT})
+  add_test(NAME direct_torque_gate COMMAND test_direct_torque_gate)
+endif()

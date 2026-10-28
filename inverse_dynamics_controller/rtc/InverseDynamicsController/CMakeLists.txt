@@ -13,6 +13,11 @@ find_package(choreonoid REQUIRED)
 
 find_package(PkgConfig)
 pkg_check_modules(openrtm_aist openrtm-aist REQUIRED)
+pkg_check_modules(hrpsys_base hrpsys-base REQUIRED)
+find_library(HRPSYS_BASE_STUB_LIBRARY hrpsysBaseStub HINTS ${hrpsys_base_LIBRARY_DIRS})
+if(NOT HRPSYS_BASE_STUB_LIBRARY)
+  message(FATAL_ERROR "hrpsysBaseStub is required for OpenHRP::TimedLongSeqSeq")
+endif()
 
 include_directories(
   ${catkin_INCLUDE_DIRS}
@@ -31,6 +36,7 @@ target_link_libraries(InverseDynamicsController
   ${catkin_LIBRARIES}
   ${CHOREONOID_BODY_LIBRARIES}
   ${openrtm_aist_LIBRARIES}
+  ${HRPSYS_BASE_STUB_LIBRARY}
   ${${PROJECT_NAME}_IDLLIBRARY_DIRS}
   # RobotHardwareServiceSkel RobotHardwareServiceStub
   )

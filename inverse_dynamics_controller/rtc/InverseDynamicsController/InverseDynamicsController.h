@@ -22,8 +22,11 @@
 #include <cpp_filters/TwoPointInterpolator.h>
 
 #include <hrpsys/idl/RobotHardwareService.hh>
+#include <hrpsys/idl/HRPDataTypes.hh>
 
 #include "InverseDynamicsControllerService_impl.h"
+#include "DirectTorqueGate.h"
+#include "DirectServoFeedback.h"
 
 class InverseDynamicsController : public RTC::DataFlowComponentBase{
 public:
@@ -39,8 +42,24 @@ public:
   bool setInverseDynamicsControllerParam(const OpenHRP::InverseDynamicsControllerService::InverseDynamicsControllerParam& i_param);
   bool getInverseDynamicsControllerParam(OpenHRP::InverseDynamicsControllerService::InverseDynamicsControllerParam& i_param);
 
+  bool beginDirectControlTransition(bool torque, double duration);
+  bool markDirectGainsStarted();
+  bool setDirectTorqueCommand(
+			      const OpenHRP::InverseDynamicsControllerService::DirectTorqueSequence& tau,
+			      double ttl);
+  long getDirectControlMode();
+  long getDirectServoStateMask();
+  std::string getDirectControlFaultReason();
+  bool directTorqueIsZero();
+  bool directPositionReferenceAligned();
+  void abortDirectControl();
+  bool resetDirectControlAfterServoOff();
+
 protected:
   std::mutex mutex_;
+  std::unique_ptr<DirectTorqueGate> direct_gate_;
+  DirectServoFeedback direct_servo_feedback_;
+  bool direct_fault_reported_ = false;
 
   unsigned int debugLevel_;
   unsigned long long loop_;
@@ -92,6 +111,11 @@ protected:
     RTC::CorbaPort m_InverseDynamicsControllerServicePort_;
     // RTC::CorbaConsumer<OpenHRP::RobotHardwareService> m_robotHardwareService0_;
     // RTC::CorbaPort m_RobotHardwareServicePort_;
+
+    RTC::TimedDoubleSeq m_qServoRef_;
+    RTC::InPort<RTC::TimedDoubleSeq> m_qServoRefIn_;
+    OpenHRP::TimedLongSeqSeq m_servoState_;
+    RTC::InPort<OpenHRP::TimedLongSeqSeq> m_servoStateIn_;
   };
   Ports ports_;
 
@@ -166,7 +190,8 @@ protected:
 
   protected:
   // utility functions
-  bool getProperty(const std::string& key, std::string& ret);
+  bool getProperty(const std::string& key, std::string& ret); /*参照、呼び出しもとの変数をcopyせず、そのまま使います*/
+  void writeDirectTorqueOutput(const std::vector<double>& torque);
 
   static bool readInPortData(const double& dt, const InverseDynamicsController::ControlMode& mode, InverseDynamicsController::Ports& ports, cnoid::BodyPtr refRobot, cnoid::BodyPtr actRobot);
   static bool execInverseDynamicsController(const InverseDynamicsController::ControlMode& mode, const double dt, cnoid::BodyPtr refRobot, cnoid::BodyPtr actRobot);

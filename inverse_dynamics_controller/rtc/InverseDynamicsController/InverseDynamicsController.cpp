@@ -7,6 +7,27 @@
 #include <cnoid/src/Body/InverseDynamics.h>
 #include "CnoidBodyUtil.h"
 #include <limits>
+#include <chrono>
+#include <sstream>
+#include <sys/time.h>
+
+
+/*ファイル内で使用するヘルパーを追加*/
+namespace {
+  static_assert(OpenHRP::RobotHardwareService::SERVO_STATE_MASK == 0x02, "Unexpected servo mask");
+  static_assert(OpenHRP::RobotHardwareService::POWER_STATE_MASK == 0x04, "Unexpected power mask");
+  double steadyNow() {
+    using Clock = std::chrono::steady_clock;
+    return std::chrono::duration<double>(Clock::now().time_since_epoch()).count();
+  }
+  template<class Sequence>
+  std::vector<double> directVector(const Sequence& seq){
+    std::vector<double> out(seq.length());
+    for (CORBA::ULong i = 0; i < seq.length(); i++) out[i] = seq[i];
+    return out;
+  }
+}
+
 
 static const char* InverseDynamicsController_spec[] = {
   "implementation_id", "InverseDynamicsController",
@@ -39,8 +60,11 @@ InverseDynamicsController::Ports::Ports() :
   m_tauOut_("tauOut", m_tau_),
 
   // Service Ports
-  m_InverseDynamicsControllerServicePort_("InverseDynamicsControllerService")
+  m_InverseDynamicsControllerServicePort_("InverseDynamicsControllerService"),
   // m_RobotHardwareServicePort_("RobotHardwareService")
+
+  m_qServoRefIn_("qServoRef", m_qServoRef_),
+  m_servoStateIn_("servoState", m_servoState_)
   {
 }
 
@@ -70,6 +94,8 @@ RTC::ReturnCode_t InverseDynamicsController::onInitialize(){
   this->addPort(this->ports_.m_InverseDynamicsControllerServicePort_);
   // this->ports_.m_RobotHardwareServicePort_.registerConsumer("service0", "RobotHardwareService", this->ports_.m_robotHardwareService0_);
   // this->addPort(this->ports_.m_RobotHardwareServicePort_);
+  this->addInPort("qServoRef", this->ports_.m_qServoRefIn_);
+  this->addInPort("servoState", this->ports_.m_servoStateIn_);
   {
     // load dt
     std::string buf; this->getProperty("dt", buf);
@@ -100,10 +126,52 @@ RTC::ReturnCode_t InverseDynamicsController::onInitialize(){
     //   std::cerr << "\x1b[31m[" << this->m_profile.instance_name << "] " << "rootLink is not FreeJoint [" << fileName << "]" << "\x1b[39m" << std::endl;
     //   return RTC::RTC_ERROR;
     // }
-    actRobot = robot->clone();
+
+    actRobot = robot->clone(); // 実際のロボットの状態を入れるためのモデル
     actRobot->calcForwardKinematics(); actRobot->calcCenterOfMass();
+    // calcCenterOfMass()は、
     refRobot = robot->clone();
     refRobot->calcForwardKinematics(); refRobot->calcCenterOfMass();
+
+    std::string directEnabled;
+    if (getProperty("direct_torque_control", directEnabled) && directEnabled == "true") {
+      try {
+        std::string feedbackSource = "servo";
+        getProperty("direct_servo_feedback_source", feedbackSource);
+        direct_servo_feedback_ = DirectServoFeedback(feedbackSource);
+        const size_t count = static_cast<size_t>(refRobot->numJoints());
+        auto readVector = [&](const std::string& key) {
+          std::string value;
+          if (!getProperty(key, value)) throw std::runtime_error("missing " + key);
+          std::istringstream stream(value);
+          std::vector<double> result;
+          double element;
+          while (stream >> element) result.push_back(element);
+          if (!stream.eof() || result.size() != count)
+            throw std::runtime_error("invalid joint vector: " + key);
+          return result;
+        };
+        auto readScalar = [&](const std::string& key) {
+          std::string value;
+          if (!getProperty(key, value)) throw std::runtime_error("missing " + key);
+          std::istringstream stream(value);
+          double result;
+          if (!(stream >> result) || !std::isfinite(result))
+            throw std::runtime_error("invalid scalar: " + key);
+          stream >> std::ws;
+          if (!stream.eof()) throw std::runtime_error("invalid scalar: " + key);
+          return result;
+        };
+        direct_gate_.reset(new DirectTorqueGate(
+            readVector("direct_torque_limits"),
+            readVector("direct_torque_slew_rates"),
+            readScalar("direct_feedback_timeout"),
+            readScalar("direct_alignment_tolerance")));
+      } catch (const std::exception& error) {
+        std::cerr << "Direct control config: " << error.what() << std::endl;
+        return RTC::RTC_ERROR;
+      }
+    }
 
     // generate JointParams
     for(int i=0;i<this->actRobot->numJoints();i++){
@@ -525,6 +593,54 @@ RTC::ReturnCode_t InverseDynamicsController::onExecute(RTC::UniqueId ec_id){
   std::string instance_name = std::string(this->m_profile.instance_name);
   this->loop_++;
 
+  /*
+    ports ... 入力・出力の窓口などをまとめたクラス
+    ports_ ... その型から作られた実際(メンバ変数)
+    末尾の_は、メンバ変数だとわかりやすくするための命名上の慣習。
+
+    ---
+    m_qRefIn_ ... 目標関節角度を受け取る入力ポート
+    m_qRef_ ... 受け取った目標関節角度のデータ
+    m_qActIn_ ... 実際の関節角度を受け取る入力ポート
+    m_tau_ ... 送信する関節トルク(データを保持する変数)
+    m_tauOut_ ... 関節トルクを送る出力ポート(送信するためのオブジェクト)
+  */
+  // Direct control must keep running even when no new qRef is received.
+  if (direct_gate_) {
+    const double now = steadyNow();
+    if (ports_.m_qActIn_.isNew()) {
+      ports_.m_qActIn_.read();
+      direct_gate_->updateActual(directVector(ports_.m_qAct_.data), now);
+    }
+    if (ports_.m_qServoRefIn_.isNew()) {
+      ports_.m_qServoRefIn_.read();
+      direct_gate_->updatePositionReference(directVector(ports_.m_qServoRef_.data), now);
+    }
+    if (ports_.m_servoStateIn_.isNew()) {
+      ports_.m_servoStateIn_.read();
+      std::vector<bool> enabled;
+      bool valid = true;
+      for (CORBA::ULong i = 0; i < ports_.m_servoState_.data.length(); ++i) {
+        const auto& state = ports_.m_servoState_.data[i];
+        if (state.length() == 0) { valid = false; break; }
+        enabled.push_back(direct_servo_feedback_.enabled(state[0]));
+      }
+      if (valid) direct_gate_->updateServoState(enabled, now);
+      else direct_gate_->updateServoState({}, now);
+    }
+    writeDirectTorqueOutput(direct_gate_->step(now, dt_));
+    if (direct_gate_->mode() == DirectTorqueGate::FAULT) {
+      if (!direct_fault_reported_) {
+        std::cerr << "[" << m_profile.instance_name << "] direct control FAULT: "
+                  << direct_gate_->faultReason() << std::endl;
+        direct_fault_reported_ = true;
+      }
+    } else {
+      direct_fault_reported_ = false;
+    }
+    return RTC::RTC_OK;
+  }
+
   if(!InverseDynamicsController::readInPortData(this->dt_, this->mode_, this->ports_, this->refRobot, this->actRobot)) return RTC::RTC_OK;  // qRef が届かなければ何もしない
 
   this->mode_.update(this->dt_);
@@ -542,6 +658,10 @@ RTC::ReturnCode_t InverseDynamicsController::onExecute(RTC::UniqueId ec_id){
 
 RTC::ReturnCode_t InverseDynamicsController::onActivated(RTC::UniqueId ec_id){
   std::lock_guard<std::mutex> guard(this->mutex_);
+  if (direct_gate_) {
+    direct_gate_->abort();
+    writeDirectTorqueOutput(direct_gate_->step(steadyNow(), dt_));
+  }
   std::cerr << "[" << m_profile.instance_name << "] "<< "onActivated(" << ec_id << ")" << std::endl;
   this->mode_.reset();
   this->idleToIdcTransitionInterpolator_.reset(0.0);
@@ -549,12 +669,18 @@ RTC::ReturnCode_t InverseDynamicsController::onActivated(RTC::UniqueId ec_id){
 }
 RTC::ReturnCode_t InverseDynamicsController::onDeactivated(RTC::UniqueId ec_id){
   std::lock_guard<std::mutex> guard(this->mutex_);
+  if (direct_gate_) {
+    direct_gate_->abort();
+    writeDirectTorqueOutput(direct_gate_->step(steadyNow(), dt_));
+  }
   std::cerr << "[" << m_profile.instance_name << "] "<< "onDeactivated(" << ec_id << ")" << std::endl;
   return RTC::RTC_OK;
 }
 RTC::ReturnCode_t InverseDynamicsController::onFinalize(){ return RTC::RTC_OK; }
 
 bool InverseDynamicsController::startInverseDynamicsController(){
+  if (direct_gate_) return false; // Direct profile owns tauOut.
+
   if(this->mode_.setNextTransition(ControlMode::START_IDC)){
     std::cerr << "[" << m_profile.instance_name << "] start inverse dynamics controller mode" << std::endl;
     while (this->mode_.now() != ControlMode::MODE_IDC) usleep(1000);
@@ -566,6 +692,8 @@ bool InverseDynamicsController::startInverseDynamicsController(){
   }
 }
 bool InverseDynamicsController::stopInverseDynamicsController(){
+  if (direct_gate_) return false; // Direct profile owns tauOut.
+
   if(this->mode_.setNextTransition(ControlMode::STOP_IDC)){
     std::cerr << "[" << m_profile.instance_name << "] stop inverse dynamics controller mode" << std::endl;
     while (this->mode_.now() != ControlMode::MODE_IDLE) usleep(1000);
@@ -604,3 +732,46 @@ extern "C"{
         manager->registerFactory(profile, RTC::Create<InverseDynamicsController>, RTC::Delete<InverseDynamicsController>);
     }
 };
+
+bool InverseDynamicsController::beginDirectControlTransition(bool torque, double duration) {
+  return direct_gate_ && direct_gate_->begin(torque, duration, steadyNow());
+}
+bool InverseDynamicsController::markDirectGainsStarted() {
+  return direct_gate_ && direct_gate_->markGainsStarted(steadyNow());
+}
+bool InverseDynamicsController::setDirectTorqueCommand(
+    const OpenHRP::InverseDynamicsControllerService::DirectTorqueSequence& tau,
+    double ttl) {
+  return direct_gate_ && direct_gate_->setCommand(directVector(tau), ttl, steadyNow());
+}
+long InverseDynamicsController::getDirectControlMode() {
+  return direct_gate_ ? static_cast<long>(direct_gate_->mode()) : -1;
+}
+long InverseDynamicsController::getDirectServoStateMask() {
+  return direct_servo_feedback_.mask();
+}
+std::string InverseDynamicsController::getDirectControlFaultReason() {
+  return direct_gate_ ? direct_gate_->faultReason() : "direct control disabled";
+}
+bool InverseDynamicsController::directTorqueIsZero() {
+  return direct_gate_ && direct_gate_->torqueIsZero();
+}
+bool InverseDynamicsController::directPositionReferenceAligned() {
+  return direct_gate_ && direct_gate_->readyForPosition(steadyNow());
+}
+void InverseDynamicsController::abortDirectControl() {
+  if (direct_gate_) direct_gate_->abort();
+}
+bool InverseDynamicsController::resetDirectControlAfterServoOff() {
+  return direct_gate_ && direct_gate_->resetAfterServoOff(steadyNow());
+}
+
+void InverseDynamicsController::writeDirectTorqueOutput(const std::vector<double>& torque) {
+  ports_.m_tau_.data.length(torque.size());
+  for (size_t i = 0; i < torque.size(); ++i) ports_.m_tau_.data[i] = torque[i];
+  timeval stamp;
+  gettimeofday(&stamp, nullptr);
+  ports_.m_tau_.tm.sec = stamp.tv_sec;
+  ports_.m_tau_.tm.nsec = stamp.tv_usec * 1000;
+  ports_.m_tauOut_.write();
+}

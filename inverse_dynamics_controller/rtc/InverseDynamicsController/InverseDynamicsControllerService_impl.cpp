@@ -34,3 +34,37 @@ void InverseDynamicsControllerService_impl::setComp(InverseDynamicsController *i
 {
   this->comp_ = i_comp;
 }
+
+CORBA::Boolean InverseDynamicsControllerService_impl::beginDirectControlTransition(
+    CORBA::Boolean torque, CORBA::Double duration) {
+  return comp_->beginDirectControlTransition(torque, duration);
+}
+CORBA::Boolean InverseDynamicsControllerService_impl::markDirectGainsStarted() {
+  return comp_->markDirectGainsStarted();
+}
+CORBA::Boolean InverseDynamicsControllerService_impl::setDirectTorqueCommand(
+    const OpenHRP::InverseDynamicsControllerService::DirectTorqueSequence& tau,
+    CORBA::Double ttl) {
+  return comp_->setDirectTorqueCommand(tau, ttl);
+}
+CORBA::Long InverseDynamicsControllerService_impl::getDirectControlMode() {
+  return comp_->getDirectControlMode();
+}
+CORBA::Long InverseDynamicsControllerService_impl::getDirectServoStateMask() {
+  return comp_->getDirectServoStateMask();
+}
+char* InverseDynamicsControllerService_impl::getDirectControlFaultReason() {
+  return CORBA::string_dup(comp_->getDirectControlFaultReason().c_str());
+}
+CORBA::Boolean InverseDynamicsControllerService_impl::directTorqueIsZero() {
+  return comp_->directTorqueIsZero();
+}
+CORBA::Boolean InverseDynamicsControllerService_impl::directPositionReferenceAligned() {
+  return comp_->directPositionReferenceAligned();
+}
+void InverseDynamicsControllerService_impl::abortDirectControl() {
+  comp_->abortDirectControl();
+}
+CORBA::Boolean InverseDynamicsControllerService_impl::resetDirectControlAfterServoOff() {
+  return comp_->resetDirectControlAfterServoOff();
+}

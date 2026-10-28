@@ -15,6 +15,18 @@ public:
   ~InverseDynamicsControllerService_impl();
   CORBA::Boolean startInverseDynamicsController();
   CORBA::Boolean stopInverseDynamicsController();
+  CORBA::Boolean beginDirectControlTransition(CORBA::Boolean torque, CORBA::Double duration);
+  CORBA::Boolean markDirectGainsStarted();
+  CORBA::Boolean setDirectTorqueCommand(
+      const OpenHRP::InverseDynamicsControllerService::DirectTorqueSequence& tau,
+      CORBA::Double ttl);
+  CORBA::Long getDirectControlMode();
+  CORBA::Long getDirectServoStateMask();
+  char* getDirectControlFaultReason();
+  CORBA::Boolean directTorqueIsZero();
+  CORBA::Boolean directPositionReferenceAligned();
+  void abortDirectControl();
+  CORBA::Boolean resetDirectControlAfterServoOff();
   CORBA::Boolean setInverseDynamicsControllerParam(const OpenHRP::InverseDynamicsControllerService::InverseDynamicsControllerParam& i_param);
   CORBA::Boolean getInverseDynamicsControllerParam(OpenHRP::InverseDynamicsControllerService::InverseDynamicsControllerParam_out i_param);
   //
