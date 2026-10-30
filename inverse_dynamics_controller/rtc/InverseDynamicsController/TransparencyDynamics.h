@@ -1,5 +1,5 @@
-#pragma once
-
+#pragma once // ヘッダを二重に読み込ままいようにするもお
+　　　
 #include <cnoid/Body>
 #include <cnoid/EigenUtil>
 #include <cnoid/src/Body/InverseDynamics.h>
@@ -14,29 +14,42 @@
 // All joint vectors follow Body::joint(i), i.e. model / RobotHardware joint IDs.
 class TransparencyDynamics {
 public:
-  EIGEN_MAKE_ALIGNED_OPERATOR_NEW
-  using Wrench = std::array<double, 6>;
+  EIGEN_MAKE_ALIGNED_OPERATOR_NEW /* eigen型の行列・ベクトルが必要とするメモリ配置を確保するためのマクロ */
+  using Wrench = std::array<double, 6>;  /* wrench用の配列の作成 */
 
+  /* 力センサーの取り付け位置・向き・重力など */
   struct Config {
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
-    std::string sensor_link;
-    cnoid::Vector3 sensor_translation = cnoid::Vector3::Zero(); // Parent-link coordinates [m].
-    cnoid::Vector3 sensor_rpy = cnoid::Vector3::Zero(); // Sensor-to-parent rotation [rad].
+    std::string sensor_link; /* センサーがついているリンクの名前 */
+    cnoid::Vector3 sensor_translation = cnoid::Vector3::Zero(); /* 取り付けリンク位置から見た、センサ原点の位置 */
+    cnoid::Vector3 sensor_rpy = cnoid::Vector3::Zero(); /* センサー座標からみたリンク座標系への回転位置 */
     cnoid::Vector3 gravity = cnoid::Vector3(0.0, 0.0, -9.80665); // World acceleration [m/s^2].
     double wrench_sign = 1.0; // +1 when the sensor reports human-on-robot wrench.
     Wrench wrench_bias = {{0, 0, 0, 0, 0, 0}}; // Raw sensor coordinates, removed before sign.
-    std::vector<double> viscous; // [Nm s/rad], or [N s/m] for a prismatic joint.
-    std::vector<double> coulomb; // [Nm], or [N] for a prismatic joint.
+    std::vector<double> viscous; /* 各関節の粘性摩擦のこと [Nm s/rad]*/
+    std::vector<double> coulomb; /* クーロン摩擦で運動方向に対してほぼ一定 [Nm] */
     double friction_velocity_scale = 0.01; // tanh smoothing [rad/s], or [m/s].
     bool gravity_only = false; // Commissioning: g(q), without motion/friction compensation.
   };
 
+  /*
+    計算結果の入れ物を用意しエチル
+  */
   struct Result {
     std::vector<double> torque; // M(q)ddq + C(q,dq)dq + g(q) + friction.
     std::vector<double> human_torque; // J_sensor(q)^T * human-on-robot wrench.
     Wrench contact_wrench; // Bias-corrected, signed [Fx,Fy,Fz,Mx,My,Mz] in sensor frame.
   };
 
+
+  /*
+   初期化時にロボットモデルを確認し、複製する.
+
+   クラスと同じ名前の関数で、オブジェクトを作るときに実行されるコンストラクタ
+   const 型& 変数名 ... 渡された値をコピーせず、読み取り専用の参照として値そのものを受け取る
+   : config_(config) ... 本体の処理より前に、メンバ変数config_を初期化
+   -> ... ポインタを通して、メンバにアクセス
+   */
   TransparencyDynamics(const cnoid::BodyPtr& model, const Config& config)
       : config_(config) {
     if (!model || !model->rootLink() || !model->rootLink()->isFixedJoint() ||
