@@ -7,6 +7,7 @@ set(CMAKE_BUILD_TYPE Release)
 find_package(catkin REQUIRED COMPONENTS
   rtmbuild2
   roscpp
+  geometry_msgs
   )
 
 # catkin_python_setup()
@@ -44,4 +45,10 @@ if(CATKIN_ENABLE_TESTING)
   target_include_directories(test_direct_torque_gate PRIVATE rtc/InverseDynamicsController)
   target_link_libraries(test_direct_torque_gate ${CMAKE_THREAD_LIBS_INIT})
   add_test(NAME direct_torque_gate COMMAND test_direct_torque_gate)
+  add_executable(test_transparency_inputs test/test_transparency_inputs.cpp)
+  target_include_directories(test_transparency_inputs PRIVATE rtc/InverseDynamicsController)
+  add_test(NAME transparency_inputs COMMAND test_transparency_inputs)
+  add_executable(test_wrench_sample_validator test/test_wrench_sample_validator.cpp)
+  target_include_directories(test_wrench_sample_validator PRIVATE rtc/ElbowWrenchBridge)
+  add_test(NAME wrench_sample_validator COMMAND test_wrench_sample_validator)
 endif()

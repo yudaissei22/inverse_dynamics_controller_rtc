@@ -57,7 +57,7 @@ public:
       if (mode_ != TORQUE) return false;
       mode_ = TO_POSITION;
     }
-    clearCommand();
+    if (!gravity_command_) clearCommand();
     duration_ = duration;
     transition_deadline_ = now + duration + 5.0;
     gains_started_ = false;
@@ -67,7 +67,7 @@ public:
   // A snapshot check; caller must also stop competing position-command producers.
   bool readyForPosition(double now) const {
     std::lock_guard<std::mutex> lock(mutex_);
-    return mode_ == TO_POSITION && zeroOutput() && aligned(now) &&
+    return mode_ == TO_POSITION && (zeroOutput() || freshGravityCommand(now)) && aligned(now) &&
            freshServoState(now) && all_servos_on_;
   }
 
@@ -77,16 +77,19 @@ public:
     std::lock_guard<std::mutex> lock(mutex_);
     if (!transitioning() || gains_started_ || now > transition_deadline_ ||
         !freshActual(now) || !freshServoState(now) || !all_servos_on_) return false;
-    if (mode_ == TO_POSITION && (!zeroOutput() || !aligned(now))) return false;
+    if (mode_ == TO_POSITION &&
+        ((!zeroOutput() && !freshGravityCommand(now)) || !aligned(now))) return false;
     gain_finish_time_ = now + duration_;
     transition_deadline_ = gain_finish_time_ + 2.0;
     gains_started_ = true;
     return true;
   }
 
-  bool setCommand(const std::vector<double>& tau, double ttl, double now) {
+  // gravity=true is reserved for the RTC's opt-in g(q) producer. Manual
+  // commands remain TORQUE-only. Gravity can support the arm during gain ramps.
+  bool setCommand(const std::vector<double>& tau, double ttl, double now, bool gravity = false) {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (mode_ != TORQUE) return false;
+    if (mode_ == FAULT || (!gravity && mode_ != TORQUE)) return false;
     if (!checkHardware(now)) return false;
     if (!valid(tau) || !positive(ttl) || ttl > 1.0) { fail("invalid torque command or TTL"); return false; }
     for (size_t i = 0; i < tau.size(); ++i)
@@ -94,6 +97,7 @@ public:
     command_ = tau;
     command_expiry_ = now + ttl;
     have_command_ = true;
+    gravity_command_ = gravity;
     return true;
   }
 
@@ -101,12 +105,13 @@ public:
   std::vector<double> step(double now, double dt) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!positive(dt) || !std::isfinite(now)) fail("invalid control time");
-    if (mode_ != POSITION && mode_ != FAULT) checkHardware(now);
+    if ((mode_ != POSITION || gravity_command_) && mode_ != FAULT) checkHardware(now);
+    if (gravity_command_ && now >= command_expiry_) fail("gravity command timeout");
     if (transitioning() && !freshReference(now)) fail("qServoRef timeout");
     if (transitioning() && now > transition_deadline_) fail("control transition timeout");
     if (transitioning() && gains_started_ && now >= gain_finish_time_) {
       mode_ = mode_ == TO_TORQUE ? TORQUE : POSITION;
-      clearCommand(); // Never replay a command from before a mode change.
+      if (!gravity_command_) clearCommand(); // Manual commands never survive mode changes.
     }
     if (mode_ == FAULT) {
       std::fill(output_.begin(), output_.end(), 0.0);
@@ -114,7 +119,7 @@ public:
     }
     if (have_command_ && now >= command_expiry_) clearCommand();
     for (size_t i = 0; i < output_.size(); ++i) {
-      const double target = mode_ == TORQUE && have_command_ ? command_[i] : 0.0;
+      const double target = (mode_ == TORQUE || gravity_command_) && have_command_ ? command_[i] : 0.0;
       const double change = std::max(-rates_[i] * dt,
                                     std::min(rates_[i] * dt, target - output_[i]));
       output_[i] += change;
@@ -126,9 +131,28 @@ public:
   bool torqueIsZero() const {
     std::lock_guard<std::mutex> lock(mutex_); return zeroOutput();
   }
+  // Software command readiness, NOT measured motor torque. Before removing
+  // position gains, wait until the bounded output has caught up with g(q).
+  bool gravityOutputReady(double now) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (mode_ == FAULT || !freshGravityCommand(now) || !freshActual(now) ||
+        !freshServoState(now) || !all_servos_on_) return false;
+    for (size_t i = 0; i < output_.size(); ++i)
+      if (std::abs(output_[i] - command_[i]) > 1e-6) return false;
+    return true;
+  }
   void abort() {
     std::lock_guard<std::mutex> lock(mutex_);
     fail("aborted by client or RTC lifecycle");
+  }
+  void fault(const std::string& reason) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    fail(reason.c_str());
+  }
+  // Revoke a producer's pending command; step() slews the output to zero.
+  void cancelCommand() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    clearCommand();
   }
   std::string faultReason() const {
     std::lock_guard<std::mutex> lock(mutex_); return fault_reason_;
@@ -179,7 +203,11 @@ private:
   }
   void clearCommand() {
     have_command_ = false;
+    gravity_command_ = false;
     std::fill(command_.begin(), command_.end(), 0.0);
+  }
+  bool freshGravityCommand(double now) const {
+    return gravity_command_ && have_command_ && now < command_expiry_;
   }
   bool checkHardware(double now) {
     if (!freshActual(now)) fail("qAct timeout");
@@ -204,5 +232,6 @@ private:
   double duration_ = 0, transition_deadline_ = 0, gain_finish_time_ = 0;
   bool have_actual_ = false, have_reference_ = false, have_command_ = false;
   bool gains_started_ = false;
+  bool gravity_command_ = false;
   bool have_servo_state_ = false, all_servos_on_ = false, all_servos_off_ = false;
 };

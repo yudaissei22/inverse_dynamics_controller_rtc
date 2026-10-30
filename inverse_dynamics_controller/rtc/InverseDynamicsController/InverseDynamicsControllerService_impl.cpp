@@ -68,3 +68,12 @@ void InverseDynamicsControllerService_impl::abortDirectControl() {
 CORBA::Boolean InverseDynamicsControllerService_impl::resetDirectControlAfterServoOff() {
   return comp_->resetDirectControlAfterServoOff();
 }
+CORBA::Boolean InverseDynamicsControllerService_impl::startTransparency() {
+  return comp_->startTransparency();
+}
+CORBA::Boolean InverseDynamicsControllerService_impl::stopTransparency() {
+  return comp_->stopTransparency();
+}
+char* InverseDynamicsControllerService_impl::getTransparencyStatus() {
+  return CORBA::string_dup(comp_->getTransparencyStatus().c_str());
+}

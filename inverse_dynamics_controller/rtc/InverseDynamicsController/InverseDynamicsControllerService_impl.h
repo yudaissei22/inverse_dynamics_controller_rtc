@@ -27,6 +27,9 @@ public:
   CORBA::Boolean directPositionReferenceAligned();
   void abortDirectControl();
   CORBA::Boolean resetDirectControlAfterServoOff();
+  CORBA::Boolean startTransparency();
+  CORBA::Boolean stopTransparency();
+  char* getTransparencyStatus();
   CORBA::Boolean setInverseDynamicsControllerParam(const OpenHRP::InverseDynamicsControllerService::InverseDynamicsControllerParam& i_param);
   CORBA::Boolean getInverseDynamicsControllerParam(OpenHRP::InverseDynamicsControllerService::InverseDynamicsControllerParam_out i_param);
   //

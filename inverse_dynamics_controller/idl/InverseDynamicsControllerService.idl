@@ -21,6 +21,11 @@ module OpenHRP
     void abortDirectControl();
     // Accepted only when fresh RobotHardware feedback reports every servo OFF.
     boolean resetDirectControlAfterServoOff();
+    // Optional measured-motion inverse dynamics; force is diagnostic only.
+    boolean startTransparency();
+    boolean stopTransparency();
+    // JSON: configured, active, ready, reason. Diagnostics are RTC output ports.
+    string getTransparencyStatus();
 
     struct InverseDynamicsControllerParam
     {

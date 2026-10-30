@@ -30,6 +30,7 @@ link_directories(
 
 add_library(InverseDynamicsController SHARED
   InverseDynamicsController.cpp
+  TransparencyControl.cpp
   InverseDynamicsControllerService_impl.cpp
   )
 target_link_libraries(InverseDynamicsController
@@ -51,3 +52,15 @@ install(TARGETS InverseDynamicsController
   LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
   RUNTIME DESTINATION ${CATKIN_GLOBAL_BIN_DESTINATION}
 )
+
+if(CATKIN_ENABLE_TESTING)
+  add_executable(test_transparency_dynamics ../../test/test_transparency_dynamics.cpp)
+  target_include_directories(test_transparency_dynamics PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+  target_link_libraries(test_transparency_dynamics ${CHOREONOID_BODY_LIBRARIES})
+  add_test(NAME transparency_dynamics COMMAND test_transparency_dynamics)
+  add_executable(test_transparency_control ../../test/test_transparency_control.cpp)
+  target_include_directories(test_transparency_control PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+  target_link_libraries(test_transparency_control InverseDynamicsController)
+  add_test(NAME transparency_control COMMAND test_transparency_control)
+  set_tests_properties(transparency_control PROPERTIES TIMEOUT 15)
+endif()

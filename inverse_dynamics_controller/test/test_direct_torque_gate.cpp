@@ -26,6 +26,50 @@ void torqueMode(Gate& gate) {
 }
 
 int main() {
+  // Gravity preloading is bounded and supports BOTH gain transitions without
+  // a zero-torque gap. Manual commands still cannot run in POSITION.
+  {
+    Gate gate({2}, {1}, 0.2, 0.01);
+    feedback(gate, 0);
+    assert(!gate.gravityOutputReady(0));
+    assert(gate.setCommand({0.1}, 0.2, 0, true));
+    assert(!gate.gravityOutputReady(0));
+    assert(gate.step(0.05, 0.05)[0] == 0.05);
+    assert(!gate.gravityOutputReady(0.05));
+    assert(gate.step(0.1, 0.05)[0] == 0.1);
+    assert(gate.gravityOutputReady(0.1));
+    // Command readiness is revoked by expiry, not only a subsequent step().
+    assert(!gate.gravityOutputReady(0.2));
+    gate.cancelCommand();
+    assert(!gate.gravityOutputReady(0.1));
+  }
+  {
+    Gate gate({2}, {100}, 0.2, 0.01);
+    feedback(gate, 0);
+    assert(!gate.setCommand({1}, 0.1, 0));
+    assert(gate.setCommand({1}, 0.1, 0, true));
+    assert(gate.step(0.01, 0.01)[0] == 1);
+    assert(gate.begin(true, 0.02, 0.01));
+    assert(gate.markGainsStarted(0.01));
+    assert(gate.step(0.04, 0.01)[0] == 1);
+    assert(gate.mode() == Gate::TORQUE);
+    assert(gate.begin(false, 0.02, 0.04));
+    assert(gate.readyForPosition(0.04));
+    assert(gate.markGainsStarted(0.04));
+    assert(gate.step(0.07, 0.01)[0] == 1);
+    assert(gate.mode() == Gate::POSITION);
+    // Expiring gravity must not be replayed, even in POSITION.
+    assert(gate.step(0.11, 0.01)[0] == 0);
+    assert(gate.mode() == Gate::FAULT);
+    assert(gate.faultReason() == "gravity command timeout");
+  }
+  {
+    Gate gate({2}, {100}, 0.2, 0.01);
+    feedback(gate, 0);
+    assert(!gate.setCommand({3}, 0.1, 0, true));
+    assert(gate.mode() == Gate::FAULT);
+    assert(gate.step(0.01, 0.01)[0] == 0);
+  }
   // Regression: trans iob reports SERVO_STATE only while pgain > 0.5.
   // POWER_STATE reports raw motor enable even at zero P/D gains.
   {

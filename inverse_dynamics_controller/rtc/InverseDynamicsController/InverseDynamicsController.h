@@ -27,6 +27,8 @@
 #include "InverseDynamicsControllerService_impl.h"
 #include "DirectTorqueGate.h"
 #include "DirectServoFeedback.h"
+#include "TransparencyDynamics.h"
+#include "TransparencyInputs.h"
 
 class InverseDynamicsController : public RTC::DataFlowComponentBase{
 public:
@@ -54,12 +56,20 @@ public:
   bool directPositionReferenceAligned();
   void abortDirectControl();
   bool resetDirectControlAfterServoOff();
+  bool startTransparency();
+  bool stopTransparency();
+  std::string getTransparencyStatus();
 
 protected:
   std::mutex mutex_;
   std::unique_ptr<DirectTorqueGate> direct_gate_;
   DirectServoFeedback direct_servo_feedback_;
   bool direct_fault_reported_ = false;
+  std::unique_ptr<TransparencyDynamics> transparency_dynamics_;
+  std::unique_ptr<TransparencyInputs> transparency_inputs_;
+  bool transparency_active_ = false;
+  bool transparency_gravity_only_ = false;
+  std::string transparency_error_;
 
   unsigned int debugLevel_;
   unsigned long long loop_;
@@ -77,6 +87,12 @@ protected:
     RTC::InPort<RTC::TimedDoubleSeq> m_dqRefIn_;
     RTC::TimedDoubleSeq m_tauRef_;
     RTC::InPort<RTC::TimedDoubleSeq> m_tauRefIn_;
+
+    /* 表示用のtau act*/
+    // RTC::TimedDoubleSeq m_tauAct_; /*TimedDoubleSeqは構造体*/
+    // RTC::InPort<RTC::TimedDoubleSeq> m_tauActIn_;
+    /* <> ... テンプレート引数 */
+    
     RTC::TimedPoint3D m_basePosRef_; // Reference World frame
     RTC::InPort<RTC::TimedPoint3D> m_basePosRefIn_;
     RTC::TimedOrientation3D m_baseRpyRef_; // Reference World frame
@@ -116,6 +132,9 @@ protected:
     RTC::InPort<RTC::TimedDoubleSeq> m_qServoRefIn_;
     OpenHRP::TimedLongSeqSeq m_servoState_;
     RTC::InPort<OpenHRP::TimedLongSeqSeq> m_servoStateIn_;
+    RTC::TimedDoubleSeq m_elbowWrench_, m_tauModel_, m_tauHuman_, m_ddqMeasured_, m_elbowWrenchOutData_;
+    RTC::InPort<RTC::TimedDoubleSeq> m_elbowWrenchIn_;
+    RTC::OutPort<RTC::TimedDoubleSeq> m_tauModelOut_, m_tauHumanOut_, m_ddqMeasuredOut_, m_elbowWrenchOut_;
   };
   Ports ports_;
 
@@ -192,6 +211,8 @@ protected:
   // utility functions
   bool getProperty(const std::string& key, std::string& ret); /*参照、呼び出しもとの変数をcopyせず、そのまま使います*/
   void writeDirectTorqueOutput(const std::vector<double>& torque);
+  bool initializeTransparency();
+  void executeTransparency(double now);
 
   static bool readInPortData(const double& dt, const InverseDynamicsController::ControlMode& mode, InverseDynamicsController::Ports& ports, cnoid::BodyPtr refRobot, cnoid::BodyPtr actRobot);
   static bool execInverseDynamicsController(const InverseDynamicsController::ControlMode& mode, const double dt, cnoid::BodyPtr refRobot, cnoid::BodyPtr actRobot);

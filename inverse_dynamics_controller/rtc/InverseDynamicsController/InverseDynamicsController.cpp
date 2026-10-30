@@ -64,7 +64,12 @@ InverseDynamicsController::Ports::Ports() :
   // m_RobotHardwareServicePort_("RobotHardwareService")
 
   m_qServoRefIn_("qServoRef", m_qServoRef_),
-  m_servoStateIn_("servoState", m_servoState_)
+  m_servoStateIn_("servoState", m_servoState_),
+  m_elbowWrenchIn_("elbowWrench", m_elbowWrench_),
+  m_tauModelOut_("tauModelOut", m_tauModel_),
+  m_tauHumanOut_("tauHumanOut", m_tauHuman_),
+  m_ddqMeasuredOut_("ddqMeasuredOut", m_ddqMeasured_),
+  m_elbowWrenchOut_("elbowWrenchOut", m_elbowWrenchOutData_)
   {
 }
 
@@ -96,6 +101,11 @@ RTC::ReturnCode_t InverseDynamicsController::onInitialize(){
   // this->addPort(this->ports_.m_RobotHardwareServicePort_);
   this->addInPort("qServoRef", this->ports_.m_qServoRefIn_);
   this->addInPort("servoState", this->ports_.m_servoStateIn_);
+  this->addInPort("elbowWrench", ports_.m_elbowWrenchIn_);
+  this->addOutPort("tauModelOut", ports_.m_tauModelOut_);
+  this->addOutPort("tauHumanOut", ports_.m_tauHumanOut_);
+  this->addOutPort("ddqMeasuredOut", ports_.m_ddqMeasuredOut_);
+  this->addOutPort("elbowWrenchOut", ports_.m_elbowWrenchOut_);
   {
     // load dt
     std::string buf; this->getProperty("dt", buf);
@@ -280,6 +290,8 @@ RTC::ReturnCode_t InverseDynamicsController::onInitialize(){
     // }
 
   }
+
+  if (!initializeTransparency()) return RTC::RTC_ERROR;
 
   // initialize parameters
   this->loop_ = 0;
@@ -611,6 +623,14 @@ RTC::ReturnCode_t InverseDynamicsController::onExecute(RTC::UniqueId ec_id){
     if (ports_.m_qActIn_.isNew()) {
       ports_.m_qActIn_.read();
       direct_gate_->updateActual(directVector(ports_.m_qAct_.data), now);
+      if (transparency_inputs_) {
+        timeval wall;
+        gettimeofday(&wall, nullptr);
+        const auto& tm = ports_.m_qAct_.tm;
+        const double stamp = tm.nsec < 1000000000 ? tm.sec + tm.nsec * 1e-9 : 0.0;
+        transparency_inputs_->position(directVector(ports_.m_qAct_.data), stamp,
+                                      now, wall.tv_sec + wall.tv_usec * 1e-6);
+      }
     }
     if (ports_.m_qServoRefIn_.isNew()) {
       ports_.m_qServoRefIn_.read();
@@ -628,7 +648,9 @@ RTC::ReturnCode_t InverseDynamicsController::onExecute(RTC::UniqueId ec_id){
       if (valid) direct_gate_->updateServoState(enabled, now);
       else direct_gate_->updateServoState({}, now);
     }
-    writeDirectTorqueOutput(direct_gate_->step(now, dt_));
+    executeTransparency(now);
+    writeDirectTorqueOutput(direct_gate_->step(steadyNow(), dt_));
+    if (direct_gate_->mode() == DirectTorqueGate::FAULT) transparency_active_ = false;
     if (direct_gate_->mode() == DirectTorqueGate::FAULT) {
       if (!direct_fault_reported_) {
         std::cerr << "[" << m_profile.instance_name << "] direct control FAULT: "
@@ -658,6 +680,8 @@ RTC::ReturnCode_t InverseDynamicsController::onExecute(RTC::UniqueId ec_id){
 
 RTC::ReturnCode_t InverseDynamicsController::onActivated(RTC::UniqueId ec_id){
   std::lock_guard<std::mutex> guard(this->mutex_);
+  transparency_active_ = false;
+  if (transparency_inputs_) transparency_inputs_->reset();
   if (direct_gate_) {
     direct_gate_->abort();
     writeDirectTorqueOutput(direct_gate_->step(steadyNow(), dt_));
@@ -669,6 +693,8 @@ RTC::ReturnCode_t InverseDynamicsController::onActivated(RTC::UniqueId ec_id){
 }
 RTC::ReturnCode_t InverseDynamicsController::onDeactivated(RTC::UniqueId ec_id){
   std::lock_guard<std::mutex> guard(this->mutex_);
+  transparency_active_ = false;
+  if (transparency_inputs_) transparency_inputs_->reset();
   if (direct_gate_) {
     direct_gate_->abort();
     writeDirectTorqueOutput(direct_gate_->step(steadyNow(), dt_));
@@ -734,7 +760,21 @@ extern "C"{
 };
 
 bool InverseDynamicsController::beginDirectControlTransition(bool torque, double duration) {
-  return direct_gate_ && direct_gate_->begin(torque, duration, steadyNow());
+  std::lock_guard<std::mutex> guard(mutex_);
+  const double now = steadyNow();
+  if (torque && transparency_gravity_only_) {
+    timeval wall;
+    gettimeofday(&wall, nullptr);
+    // Atomic with the producer and stop/reset services: a Python snapshot is
+    // insufficient to authorize gain removal after gravity was lost/stopped.
+    if (!transparency_active_ || !transparency_inputs_ || !direct_gate_ ||
+        !transparency_error_.empty() ||
+        !transparency_inputs_->reason(now, wall.tv_sec + wall.tv_usec * 1e-6).empty() ||
+        !direct_gate_->gravityOutputReady(now)) return false;
+  }
+  const bool accepted = direct_gate_ && direct_gate_->begin(torque, duration, now);
+  if (accepted && !transparency_gravity_only_) transparency_active_ = false;
+  return accepted;
 }
 bool InverseDynamicsController::markDirectGainsStarted() {
   return direct_gate_ && direct_gate_->markGainsStarted(steadyNow());
@@ -742,7 +782,9 @@ bool InverseDynamicsController::markDirectGainsStarted() {
 bool InverseDynamicsController::setDirectTorqueCommand(
     const OpenHRP::InverseDynamicsControllerService::DirectTorqueSequence& tau,
     double ttl) {
-  return direct_gate_ && direct_gate_->setCommand(directVector(tau), ttl, steadyNow());
+  std::lock_guard<std::mutex> guard(mutex_);
+  return direct_gate_ && !transparency_active_ &&
+         direct_gate_->setCommand(directVector(tau), ttl, steadyNow());
 }
 long InverseDynamicsController::getDirectControlMode() {
   return direct_gate_ ? static_cast<long>(direct_gate_->mode()) : -1;
@@ -760,10 +802,19 @@ bool InverseDynamicsController::directPositionReferenceAligned() {
   return direct_gate_ && direct_gate_->readyForPosition(steadyNow());
 }
 void InverseDynamicsController::abortDirectControl() {
+  std::lock_guard<std::mutex> guard(mutex_);
+  transparency_active_ = false;
   if (direct_gate_) direct_gate_->abort();
 }
 bool InverseDynamicsController::resetDirectControlAfterServoOff() {
-  return direct_gate_ && direct_gate_->resetAfterServoOff(steadyNow());
+  std::lock_guard<std::mutex> guard(mutex_);
+  const bool reset = direct_gate_ && direct_gate_->resetAfterServoOff(steadyNow());
+  if (reset) {
+    transparency_active_ = false;
+    transparency_error_.clear();
+    if (transparency_inputs_) transparency_inputs_->reset();
+  }
+  return reset;
 }
 
 void InverseDynamicsController::writeDirectTorqueOutput(const std::vector<double>& torque) {
